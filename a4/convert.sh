@@ -1,0 +1,9 @@
+./convert ge_data/size8x8 
+./convert ge_data/size16x16
+./convert ge_data/size32x32
+./convert ge_data/size64x64
+./convert ge_data/size512x512
+./convert ge_data/size1024x1024
+./convert ge_data/size2048x2048
+./convert ge_data/size4096x4096
+./convert ge_data/size8192x8192
