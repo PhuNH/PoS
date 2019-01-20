@@ -6,13 +6,14 @@
 
 int main(int argc, char** argv) {
     char matrix_name[200], vector_name[200], solution_name[200];
-    int dims[2];
+    int dims[2], rhs_rows;
     int rows, columns, size, rank;
     double *matrix_local_block, *rhs_local_block;
     double total_time, io_time = 0, kernel_time, mpi_time = 0;
     double total_start, io_start, kernel_start, mpi_start;
     MPI_File matrix_file, vector_file, solution_file;
-    MPI_Status status;
+    MPI_Request reqs[2];
+    MPI_Status stts[2], status;
     int ret;
 
     if (argc != 2) { 
@@ -65,13 +66,6 @@ int main(int argc, char** argv) {
         MPI_Abort(MPI_COMM_WORLD, -1);
     }
     
-    int local_block_size = rows / size;
-    
-    MPI_File_set_view(matrix_file, 2 * sizeof(int) + rank * local_block_size * columns * sizeof(double), MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
-    matrix_local_block = (double *) malloc(local_block_size * columns * sizeof(double));
-    MPI_File_read_all(matrix_file, matrix_local_block, local_block_size * columns, MPI_DOUBLE, &status);
-    MPI_File_close(&matrix_file);
-    
     ret = MPI_File_open(MPI_COMM_WORLD, vector_name, MPI_MODE_RDONLY, MPI_INFO_NULL, &vector_file);
     if (ret != 0) {
         MPI_Error_string(ret, error, &errLen);
@@ -79,16 +73,23 @@ int main(int argc, char** argv) {
         perror("Could not open the specified vector file");
         MPI_Abort(MPI_COMM_WORLD, -1);
     }
-    int rhs_rows;
     MPI_File_read_at_all(vector_file, 0, &rhs_rows, 1, MPI_INT, &status);
     if (rhs_rows != rows){
         perror("RHS rows must match the sizes of A");
         MPI_Abort(MPI_COMM_WORLD, -1);
     }
     
+    int local_block_size = rows / size;
+    
+    MPI_File_set_view(matrix_file, 2 * sizeof(int) + rank * local_block_size * columns * sizeof(double), MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
     MPI_File_set_view(vector_file, sizeof(int) + rank * local_block_size * sizeof(double), MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
+    matrix_local_block = (double *) malloc(local_block_size * columns * sizeof(double));
     rhs_local_block = (double *) malloc(local_block_size * sizeof(double));
-    MPI_File_read_all(vector_file, rhs_local_block, local_block_size, MPI_DOUBLE, &status);
+    MPI_File_iread_all(matrix_file, matrix_local_block, local_block_size * columns, MPI_DOUBLE, &reqs[0]);
+    MPI_File_iread_all(vector_file, rhs_local_block, local_block_size, MPI_DOUBLE, &reqs[1]);
+    MPI_Waitall(2, reqs, stts);
+    
+    MPI_File_close(&matrix_file);
     MPI_File_close(&vector_file);
     
     io_time += MPI_Wtime() - io_start;
