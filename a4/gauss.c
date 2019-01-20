@@ -192,12 +192,6 @@ int main(int argc, char** argv) {
         MPI_Abort(MPI_COMM_WORLD, -1);
     }
     
-    /*fprintf(solution_file, "%d\n", rows);
-    for(i = 0; i < rows; i++) {
-        fprintf(solution_file, "%f ", solution[i]);
-    }
-    fprintf(solution_file, "\n");*/
-    printf("rank %d solution: %f %f\n", rank, solution_local_block[0], solution_local_block[1]);
     if (rank == 0)
         MPI_File_write_at(solution_file, 0, &rows, 1, MPI_INT, &status);
     MPI_File_set_view(solution_file, sizeof(int) + rank * local_block_size * sizeof(double), MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
