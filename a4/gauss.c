@@ -8,11 +8,12 @@ int main(int argc, char** argv) {
     char matrix_name[200], vector_name[200], solution_name[200];
     int dims[2];
     int rows, columns, size, rank;
-    double **matrix_2d_mapped, *rhs, *solution;
+    double *matrix_local_block, *rhs_local_block;
     double total_time, io_time = 0, kernel_time, mpi_time = 0;
     double total_start, io_start, kernel_start, mpi_start;
     MPI_File matrix_file, vector_file, solution_file;
     MPI_Status status;
+    int ret;
 
     if (argc != 2) { 
         perror("The base name of the input matrix and vector files must be given\n"); 
@@ -25,7 +26,7 @@ int main(int argc, char** argv) {
 
     sprintf(matrix_name,   "%s.mat.bin", argv[1]);
     sprintf(vector_name,   "%s.vec.bin", argv[1]);
-    sprintf(solution_name, "%s.sol", argv[1]);
+    sprintf(solution_name, "%s.sol.bin", argv[1]);
 
     MPI_Init(&argc, &argv); 
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -42,30 +43,42 @@ int main(int argc, char** argv) {
 
     int row, column, index, i;
     io_start = MPI_Wtime();
-        
-    MPI_File_open(MPI_COMM_WORLD, matrix_name, MPI_MODE_RDONLY, MPI_INFO_NULL, &matrix_file);
+    
+    char error[200];
+    int errLen;
+    ret = MPI_File_open(MPI_COMM_WORLD, matrix_name, MPI_MODE_RDONLY, MPI_INFO_NULL, &matrix_file);
+    if (ret != 0) {
+        MPI_Error_string(ret, error, &errLen);
+        printf("%s\n", error);
+        perror("Could not open the specified matrix file");
+        MPI_Abort(MPI_COMM_WORLD, -1);
+    }
+    
     MPI_File_read_at_all(matrix_file, 0, dims, 2, MPI_INT, &status);
     rows = dims[0]; columns = dims[1];
     if (rows != columns) {
-        perror("Only square matrices are allowed\n");
+        perror("Only square matrices are allowed");
         MPI_Abort(MPI_COMM_WORLD, -1);
     }
     if (rows % size != 0) {
-        perror("The matrix should be divisible by the number of processes\n");
+        perror("The matrix should be divisible by the number of processes");
         MPI_Abort(MPI_COMM_WORLD, -1);
     }
     
     int local_block_size = rows / size;
     
     MPI_File_set_view(matrix_file, 2 * sizeof(int) + rank * local_block_size * columns * sizeof(double), MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
-    matrix_2d_mapped = (double **) malloc(local_block_size * sizeof(double *));
-    for (row = 0; row < local_block_size; row++){
-        matrix_2d_mapped[row] = (double *) malloc(columns * sizeof(double));
-        MPI_File_read_all(matrix_file, matrix_2d_mapped[row], columns, MPI_DOUBLE, &status);
-    }
+    matrix_local_block = (double *) malloc(local_block_size * columns * sizeof(double));
+    MPI_File_read_all(matrix_file, matrix_local_block, local_block_size * columns, MPI_DOUBLE, &status);
     MPI_File_close(&matrix_file);
     
-    MPI_File_open(MPI_COMM_WORLD, vector_name, MPI_MODE_RDONLY, MPI_INFO_NULL, &vector_file);
+    ret = MPI_File_open(MPI_COMM_WORLD, vector_name, MPI_MODE_RDONLY, MPI_INFO_NULL, &vector_file);
+    if (ret != 0) {
+        MPI_Error_string(ret, error, &errLen);
+        printf("%s\n", error);
+        perror("Could not open the specified vector file");
+        MPI_Abort(MPI_COMM_WORLD, -1);
+    }
     int rhs_rows;
     MPI_File_read_at_all(vector_file, 0, &rhs_rows, 1, MPI_INT, &status);
     if (rhs_rows != rows){
@@ -74,19 +87,15 @@ int main(int argc, char** argv) {
     }
     
     MPI_File_set_view(vector_file, sizeof(int) + rank * local_block_size * sizeof(double), MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
-    rhs = (double *) malloc(local_block_size * sizeof(double));
-    MPI_File_read_all(vector_file, rhs, local_block_size, MPI_DOUBLE, &status);
+    rhs_local_block = (double *) malloc(local_block_size * sizeof(double));
+    MPI_File_read_all(vector_file, rhs_local_block, local_block_size, MPI_DOUBLE, &status);
     MPI_File_close(&vector_file);
     
     io_time += MPI_Wtime() - io_start;
-
-    solution = (double *) malloc (rows * sizeof(double));
     
-    /*int process, column_pivot;
+    int process, column_pivot;
 
 	double tmp, pivot;
-	double *matrix_local_block = (double *) malloc(local_block_size * rows * sizeof(double));
-	double *rhs_local_block = (double *) malloc(local_block_size * sizeof(double));
 	double *pivots = (double *) malloc((local_block_size + (rows * local_block_size) + 1) * sizeof(double));
 	double *local_work_buffer = (double *) malloc(local_block_size * sizeof(double));
 	double *accumulation_buffer = (double *) malloc(local_block_size * 2 * sizeof(double));
@@ -172,81 +181,62 @@ int main(int argc, char** argv) {
 		mpi_time += MPI_Wtime() - mpi_start;
 	}
 
-	if(rank == 0) {
-		for(i = 0; i < local_block_size; i++){
-			solution[i] = solution_local_block[i];
-		}
-		mpi_start = MPI_Wtime();
-		for(i = 1; i < size; i++){
-			MPI_Recv(solution + (i * local_block_size), local_block_size, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);
-		}
-		mpi_time += MPI_Wtime() - mpi_start;
-	} else {
-		mpi_start = MPI_Wtime();
-		MPI_Send(solution_local_block, local_block_size, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
-		mpi_time += MPI_Wtime() - mpi_start;
-	}
-
 	kernel_time = MPI_Wtime() - kernel_start;
 
-	if (rank == 0) {
-		io_start = MPI_Wtime();
-		if ((solution_file = fopen(solution_name, "w+")) == NULL) {
-			perror("Could not open the solution file");
-			MPI_Abort(MPI_COMM_WORLD, -1);
-		}
+    io_start = MPI_Wtime();
+    ret = MPI_File_open(MPI_COMM_WORLD, solution_name, MPI_MODE_WRONLY | MPI_MODE_CREATE, MPI_INFO_NULL, &solution_file);
+    if (ret != 0) {
+        MPI_Error_string(ret, error, &errLen);
+        printf("%s\n", error);
+        perror("Could not open the specified solution file");
+        MPI_Abort(MPI_COMM_WORLD, -1);
+    }
+    
+    /*fprintf(solution_file, "%d\n", rows);
+    for(i = 0; i < rows; i++) {
+        fprintf(solution_file, "%f ", solution[i]);
+    }
+    fprintf(solution_file, "\n");*/
+    printf("rank %d solution: %f %f\n", rank, solution_local_block[0], solution_local_block[1]);
+    
+    MPI_File_close(&solution_file);
+    io_time += MPI_Wtime() - io_start;
 
-		fprintf(solution_file, "%d\n", rows);
-		for(i = 0; i < rows; i++) {
-			fprintf(solution_file, "%f ", solution[i]);
-		}
-		fprintf(solution_file, "\n");
-		fclose(solution_file);
-		io_time += MPI_Wtime() - io_start;
+    /*if(print_a){
+        printf("\nSystem Matrix (A):\n");
+        for (row = 0; row < rows; row++) {
+            for (column = 0; column < columns; column++){
+                printf("%4.1f ", matrix_2d_mapped[row][column]);
+            }
+            printf("\n");
+        }
+    }
 
-		if(print_a){
-			printf("\nSystem Matrix (A):\n");
-			for (row = 0; row < rows; row++) {
-				for (column = 0; column < columns; column++){
-					printf("%4.1f ", matrix_2d_mapped[row][column]);
-				}
-				printf("\n");
-			}
-		}
+    if(print_b){
+        printf("\nRHS Vector (b):\n");
+        for (row = 0; row < rows; row++) {
+            printf("%4.1f\n", rhs[row]);
+        }
+    }
 
-		if(print_b){
-			printf("\nRHS Vector (b):\n");
-			for (row = 0; row < rows; row++) {
-				printf("%4.1f\n", rhs[row]);
-			}
-		}
-
-		if(print_x){
-			printf("\n\nSolution Vector (x):\n");
-			for(row = 0; row < rows; row++){
-				printf("%4.4f\n",solution[row]);
-			}
-		}
-	}*/
+    if(print_x){
+        printf("\n\nSolution Vector (x):\n");
+        for(row = 0; row < rows; row++){
+            printf("%4.4f\n",solution[row]);
+        }
+    }*/
 
 	total_time = MPI_Wtime() - total_start;
 
 	printf("[R%02d] Times: IO: %f; Compute: %f; MPI: %f; Total: %f;\n", 
 			rank, io_time, kernel_time, mpi_time, total_time);
-
-    for (i = 0; i < local_block_size; i++){
-        free(matrix_2d_mapped[i]);
-    }
-    free(matrix_2d_mapped);
-    free(rhs);
-    free(solution);
     
-	/*free(matrix_local_block);
+    free(matrix_local_block);
 	free(rhs_local_block);
 	free(pivots);
 	free(local_work_buffer);
 	free(accumulation_buffer);
-	free(solution_local_block);*/
+	free(solution_local_block);
 
 	MPI_Finalize(); 
 	return 0;
